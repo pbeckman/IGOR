@@ -32,7 +32,7 @@ module expected_improvement
         end
 
         # println("making model")
-        model = Model(solver = IpoptSolver())
+        model = Model(solver = IpoptSolver(max_iter=500))
 
         # println("building variables")
         vars = [@variable(model, start=x0[i]) for i = 1:n]

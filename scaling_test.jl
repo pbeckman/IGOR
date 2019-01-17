@@ -8,13 +8,13 @@ import experiment_design: EI_DOE, LH_DOE
 file = open("output.txt", "w")
 
 for dim in [1, 2, 5, 10, 100]
-    for n_tot in [5, 10, 50, 100, 500, 1000]
+    for n_tot in [5, 10, 50, 100, 500]
         if n_tot <= 10 * dim
-            println("dim: ", dim, ", samples: ", n_tot)
+            println("dim = ", dim, ", samples = ", n_tot)
             n_starts = 10 * dim
-            bounds = hcat(zeros(dim,1), ones(dim,1))
+            bounds = hcat(-1*ones(dim,1), ones(dim,1))
             f(x) = norm(x)^2
-            n_init = max(2, div(n_tot, 4))
+            n_init = max(4, div(n_tot, 3))
             n_add  = n_tot - n_init
 
             n_trials = 10
@@ -23,8 +23,17 @@ for dim in [1, 2, 5, 10, 100]
 
             for i = 1:n_trials
                 # println("running EI DOE")
-                EI_x, EI_vals[i] = EI_DOE(bounds, n_init, n_add, n_starts, f, 0.1, 0, x->0, file)
-                # println(EI_vals[i])
+                failed = true
+                while failed
+                    try
+                        EI_x, EI_vals[i] = EI_DOE(bounds, n_init, n_add, n_starts, f, 0.1, 0, x->0, file, epsilon=1e-3)
+                        failed = false
+                    catch e
+                        if !isa(e, ErrorException)
+                            rethrow(e)
+                        end
+                    end
+                end
             end
 
             LH_vals = zeros(10000)

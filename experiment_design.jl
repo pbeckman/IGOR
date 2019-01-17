@@ -11,7 +11,7 @@ module experiment_design
 
     export EI_DOE, LH_DOE
 
-    function EI_DOE(bounds, n_init, n_add, n_starts, f, alpha, beta, cost, file ; hyperparameters=nothing)
+    function EI_DOE(bounds, n_init, n_add, n_starts, f, alpha, beta, cost, file ; hyperparameters=nothing, epsilon=0)
         SO = STDOUT
 
         xs = LH(bounds, n_init)
@@ -19,8 +19,8 @@ module experiment_design
 
         gp = GP(xs, ys, matern, d_matern, nothing, nothing, nothing)
 
-        if isa(hyperparameters, Nothing)
-            MLE(gp, file)
+        if hyperparameters == nothing
+            MLE(gp, file, epsilon=epsilon, bounds=bounds)
         else
             gp.hyperparameters = hyperparameters
         end
@@ -30,7 +30,8 @@ module experiment_design
         println("LENGTH SCALE l: ", gp.hyperparameters[1])
 
         for i = 1:size(xs,1)
-            println("LHS X: ", xs[i,:])
+            println("LHS X     : ", xs[i,:])
+            println("  LHS f(X): ", f(xs[i,:]))
         end
 
         # refine bounds to bounding box of sampled points
@@ -61,7 +62,8 @@ module experiment_design
             end
             redirect_stdout(SO)
 
-            println("NEXT X: ", next_x)
+            println("NEXT X     : ", next_x)
+            println("  NEXT f(X): ", f(next_x))
 
             # if min([norm(next_x' - xs[i,:]) for i = 1:size(xs,1)]...) < 0.1
             #     break
@@ -76,11 +78,14 @@ module experiment_design
         next_x = multistart_optimize(gp, bounds, n_starts ; obj="mean")
         redirect_stdout(SO)
 
-        println("FINAL X: ", next_x, "\n")
+        println("FINAL X   : ", next_x)
+        println("FINAL f(X): ", f(next_x))
 
         add_data(gp, next_x', f(next_x))
 
         min_val, min_ind = findmin(gp.ys)
+
+        println("BEST f(X): ", min_val, "\n")
 
         return gp.xs[min_ind,:], min_val
     end

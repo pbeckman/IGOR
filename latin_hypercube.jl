@@ -6,7 +6,7 @@ module latin_hypercube
         xs = []
 
         # place point randomly in grid sqaure
-        grid = [[(bounds[i,2] - bounds[i,1]) * (j-rand())/n_points for j = 1:n_points] for i = 1:dim]
+        grid = [[bounds[i,1] + (bounds[i,2] - bounds[i,1]) * (j-rand())/n_points for j = 1:n_points] for i = 1:dim]
         n_left = n_points
 
         for i = 1:n_points
