@@ -5,22 +5,29 @@ module gaussian_process
     export GP, gp_mean, gp_var, add_data, update_covariance,
            cov_mat, posterior, stack
 
-    mutable struct GP
+    mutable struct GP_struct
         xs
         ys
-        ds
-        ts
+        ds # derivative data
+        ts # trigger distance data
         kernel
-        d_kernel
-        dd_kernel
-        d_hp_kernel
+        # d_kernel
+        # dd_kernel
+        # d_hp_kernel
         hyperparameters
         args
-        K
-        K_inv
+        K # covariance matrix
+        # K_inv
+    end
+
+    function GP(; xs=nothing, ys=nothing, ds=nothing, ts=nothing,
+                kernel=nothing, hyperparameters=nothing, args=nothing, K=nothing)
+        # constructor function for GPs
+        return GP_struct(xs, ys, ds, ts, kernel, hyperparameters, args, K)
     end
 
     function add_data(gp, xs, ys ; ds=nothing, ts=nothing)
+        # add oberservations
         gp.xs = vcat(gp.xs, xs)
         gp.ys = vcat(gp.ys, ys)
         if ds != nothing
@@ -31,63 +38,53 @@ module gaussian_process
         end
     end
 
-    # function cov_mat(gp, xs1, xs2 ; use_ds=false)
-    #     # form covariance matrix, using derivatives if desired
-    #     n = size(xs1,2)
-    #     m1 = size(xs1,1)
-    #     m2 = size(xs2,1)
-    #
-    #     if use_ds
-    #         K = zeros(typeof(xs1[1]), (n+1)*m1, (n+1)*m2)
-    #     else
-    #         K = zeros(typeof(xs1[1]), m1, m2)
-    #     end
-    #
-    #     # fill function-function matrix block
-    #     for i = 1:m1
-    #         for j = 1:m2
-    #             K[i,j] = gp.kernel(xs1[i,:], xs2[j,:], gp.hyperparameters, gp.args)
-    #             # if use_ds
-    #             #     s_j = m2 + n*(j-1)
-    #             #     s_i = m1 + n*(i-1)
-    #             #
-    #             #     K[i, (s_j + 1):(s_j + n)] = gp.d_kernel(xs2[j,:], xs1[i,:], gp.hyperparameters)
-    #             #     K[(s_i + 1):(s_i + n), j] = gp.d_kernel(xs1[i,:], xs2[j,:], gp.hyperparameters)
-    #             #
-    #             #     K[m1 + i, (s_j + 1):(s_j + n)] = gp.dd_kernel(xs2[j,:], xs1[i,:], gp.hyperparameters)
-    #             #     K[(s_i + 1):(s_i + n), j] = gp.dd_kernel(xs1[i,:], xs2[j,:], gp.hyperparameters)
-    #             # end
-    #         end
-    #     end
-    #
-    #     if use_ds
-    #         # fill function-derivative matrix blocks
-    #         for i = 1:m1
-    #             for j = 1:m2
-    #                 for d = 1:n
-    #                     K[i, m2 + n*(j-1) + d] = gp.d_kernel(xs2[j,:], xs1[i,:], d, gp.hyperparameters, gp.args)
-    #                     K[m1 + n*(i-1) + d, j] = gp.d_kernel(xs1[i,:], xs2[j,:], d, gp.hyperparameters, gp.args)
-    #                 end
-    #             end
-    #         end
-    #
-    #         # fill derivative-derivative matrix block
-    #         for i = 1:m1
-    #             for d1 = 1:n
-    #                 for j = 1:m2
-    #                     for d2 = 1:n
-    #                         K[m1 + n*(i-1) + d1, m2 + n*(j-1) + d2] = gp.dd_kernel(xs1[i,:], xs2[j,:], d1, d2, gp.hyperparameters, gp.args)
-    #                     end
-    #                 end
-    #             end
-    #         end
-    #     end
-    #
-    #     return K
-    # end
+    function cov_mat_brute(gp, xs1, xs2 ; use_ds=false)
+        # form covariance matrix using explicit kernel derivative functions
+        n = size(xs1,2)
+        m1 = size(xs1,1)
+        m2 = size(xs2,1)
+
+        if use_ds
+            K = zeros(typeof(xs1[1]), (n+1)*m1, (n+1)*m2)
+        else
+            K = zeros(typeof(xs1[1]), m1, m2)
+        end
+
+        # fill function-function matrix block
+        for i = 1:m1
+            for j = 1:m2
+                K[i,j] = gp.kernel(xs1[i,:], xs2[j,:], gp.hyperparameters, gp.args)
+            end
+        end
+
+        if use_ds
+            # fill function-derivative matrix blocks
+            for i = 1:m1
+                for j = 1:m2
+                    for d = 1:n
+                        K[i, m2 + n*(j-1) + d] = gp.d_kernel(xs2[j,:], xs1[i,:], d, gp.hyperparameters, gp.args)
+                        K[m1 + n*(i-1) + d, j] = gp.d_kernel(xs1[i,:], xs2[j,:], d, gp.hyperparameters, gp.args)
+                    end
+                end
+            end
+
+            # fill derivative-derivative matrix block
+            for i = 1:m1
+                for d1 = 1:n
+                    for j = 1:m2
+                        for d2 = 1:n
+                            K[m1 + n*(i-1) + d1, m2 + n*(j-1) + d2] = gp.dd_kernel(xs1[i,:], xs2[j,:], d1, d2, gp.hyperparameters, gp.args)
+                        end
+                    end
+                end
+            end
+        end
+
+        return K
+    end
 
     function cov_mat(gp, xs1, xs2 ; use_ds=false)
-        # form covariance matrix, using derivatives if desired
+        # form covariance matrix using AD for derivatives
         n = size(xs1,2)
         m1 = size(xs1,1)
         m2 = size(xs2,1)
@@ -141,7 +138,7 @@ module gaussian_process
     end
 
     function posterior(gp, xs ; use_ds=false)
-        # compute posterior mean and variance using default linear solves
+        # compute posterior mean and variance using linear solves
         m, n = size(xs)
 
         if use_ds
@@ -150,16 +147,9 @@ module gaussian_process
             ys = gp.ys
         end
 
-        # println(size(cov_mat(gp, xs, gp.xs, use_ds=use_ds)), " ", size(gp.K), " ", size(ys))
-
         K_test = cov_mat(gp, xs, xs, use_ds=use_ds)
         K_cross = cov_mat(gp, xs, gp.xs, use_ds=use_ds)
         K = gp.K
-
-        # display(K_test)
-        # display(K_cross)
-        # display(K)
-        # readline(STDIN)
 
         mean = K_cross * (K \ ys)
         cov  = K_test - K_cross * (K \ transpose(K_cross))

@@ -52,27 +52,26 @@ ts = [min([abs(x-d) for d in disc]...) for x in xs]
 
 ### BUILD GAUSSIAN PROCESSES
 
-# GP for trigger distance
+# GP for log trigger distance
 gp_t = GP(
-    xs,
-    ts,
-    nothing,
-    nothing,
-    matern, d_matern, dd_matern, d_hp_matern,
-    [2],
-    [2.5],
-    nothing,
-    nothing
+    xs=xs,
+    ys=log.(ts),
+    kernel=matern,
+    hyperparameters=[2],
+    args=[2.5]
     )
 
 # update trigger distance GP covariance
 update_covariance(gp_t, use_ds=false)
 
-# use GP posterior mean as a surrogate for length scale
-t(x) = posterior(gp_t, reshape(x, 1, 1) ; use_ds=false)[1][1]
-# other hyperparameters
+## hyperparameters
+# length scale of SE
 l_SE = 2
+# length scale of matern
 l_m = 5
+# use GP posterior mean as a surrogate for length scale
+t(x) = exp(posterior(gp_t, reshape(x, 1, 1) ; use_ds=false)[1][1])
+# differentiability of matern
 v = 2.5
 
 # construct product kernel
@@ -80,16 +79,13 @@ k(x, y, hp, args) = VL_SE(x, y, [hp[1]], [args[1]]) * matern(x, y, [hp[2]], [arg
 
 # variable length SE
 gp = GP(
-    xs,
-    ys,
-    ds,
-    ts,
-    k, nothing, nothing,
-    nothing,
-    [l_SE, l_m],
-    [t, v],
-    nothing,
-    nothing
+    xs=xs,
+    ys=ys,
+    ds=ds,
+    ts=ts,
+    kernel=k,
+    hyperparameters=[l_SE, l_m],
+    args=[t, v]
     )
 
 ### ESTIMATE HYPERPARAMETERS
@@ -105,11 +101,9 @@ update_covariance(gp, use_ds=use_ds)
 
 display(gp.K)
 
+# make grid on which to compute posterior
 n_grid = 200
 g = reshape(linspace(-5,5,n_grid), (n_grid,1))
-
-# compute posterior mean and covariance of trigger distance GP
-mean_t, cov_t = posterior(gp_t, g, use_ds=false)
 
 # compute posterior mean and covariance of data GP
 mean, cov = posterior(gp, g, use_ds=use_ds)
@@ -118,9 +112,9 @@ std_dev = [sqrt(max(0, cov[i,i])) for i=1:size(cov,1)]
 ### PLOT
 
 # plot trigger distance
-plot(g, mean_t, color="blue", label="Matern 5/2 GP for trigger distance")
+plot(g, [t([x]) for x in g], color="blue", label="Matern 5/2 GP for trigger distance")
 # plot trigger data
-scatter(xs, ts, color="blue")
+scatter(xs, [t([x]) for x in xs], color="blue")
 
 # plot mean
 plot(g, mean, color="red", label="variable length SE * Matern 5/2 GP for data")
@@ -137,7 +131,6 @@ scatter(xs, ys, color="black")
 
 xlim([-5,5])
 ylim([-10,10])
-# title("alpha = 10")
 legend(loc="upper right")
 
 show()
