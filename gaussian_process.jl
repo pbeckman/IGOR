@@ -20,15 +20,16 @@ module gaussian_process
         K_inv
         use_ds
         use_AD
+        use_noise
     end
 
     function GP(; xs=nothing, ys=nothing, ds=nothing, ts=nothing,
                 kernel=nothing, d_kernel=nothing, dd_kernel=nothing,
                 hyperparameters=nothing, args=nothing, noise_params=nothing,
                 K=nothing, K_inv=nothing,
-                use_ds=false, use_AD=true)
+                use_ds=false, use_AD=true, use_noise=false)
         # constructor function for GPs
-        return GP_struct(xs, ys, ds, ts, kernel, d_kernel, dd_kernel, hyperparameters, args, noise_width, K, K_inv, use_ds, use_AD)
+        return GP_struct(xs, ys, ds, ts, kernel, d_kernel, dd_kernel, hyperparameters, args, noise_params, K, K_inv, use_ds, use_AD, use_noise)
     end
 
     function add_data(gp, xs, ys ; ds=nothing, ts=nothing)
@@ -49,35 +50,35 @@ module gaussian_process
         end
     end
 
-    function cov_mat(gp, xs1, xs2)
+    function cov_mat(gp, xs1, xs2 ; is_K=false)
         # form covariance matrix using AD for derivatives
-        p = size(xs1,2)
-        m1 = size(xs1,1)
-        m2 = size(xs2,1)
+        p = size(xs1, 2)
+        n1 = size(xs1, 1)
+        n2 = size(xs2, 1)
 
         # takes on ForwardDiff.Dual type if a dual is passed to the function
         T = Float64
-        for i in [xs1, xs2, gp.hyperparameters]
-            if !(typeof(vec(i)[1]) in [Float64, Float32, Int64, Int32])
-                T = typeof(vec(i)[1])
+        for obj in [xs1, xs2, gp.hyperparameters, gp.noise_params]
+            if obj != nothing && !(typeof(vec(obj)[1]) in [Float64, Float32, Int64, Int32])
+                T = typeof(vec(obj)[1])
             end
         end
 
         if gp.use_ds
-            K = zeros(T, (p+1)*m1, (p+1)*m2)
+            K = zeros(T, (p+1)*n1, (p+1)*n2)
         else
-            K = zeros(T, m1, m2)
+            K = zeros(T, n1, n2)
         end
 
-        for i = 1:m1
-            for j = 1:m2
+        for i = 1:n1
+            for j = 1:n2
                 # fill function-function block with kernel values
                 K[i,j] = gp.kernel(xs1[i,:], xs2[j,:], gp.hyperparameters, gp.args)
 
                 if gp.use_ds
                     # starting index of derivative sub-blocks given the dimension of the space
-                    s_j = m2 + p*(j-1)
-                    s_i = m1 + p*(i-1)
+                    s_j = n2 + p*(j-1)
+                    s_i = n1 + p*(i-1)
 
                     if gp.use_AD
                         # fill function-derivative blocks with derivative kernel values
@@ -117,35 +118,31 @@ module gaussian_process
             end
         end
 
-        return K
-    end
-
-    function update_covariance(gp)
-        n, p = size(gp.xs)
-
-        gp.K = cov_mat(gp, gp.xs, gp.xs)
-
-        if gp.use_ds && gp.noise_params != nothing
-            max_noise, β = noise_params
-            Σ = zeros(n*p, n*p)
+        # add derivative noise to lower right block
+        if is_K && gp.use_noise && gp.use_ds
+            n = n1
+            max_noise, β = gp.noise_params
+            Σ = zeros(T, n*p, n*p)
             for i=1:n
                 for j=1:p
                     Σ[p*(i-1)+j, p*(i-1)+j] = max_noise * exp(-gp.ts[i, j] / β)
                 end
             end
-            # println(diag(Σ))
-            gp.K = gp.K + [zeros(n, n) zeros(n, n*p); zeros(n*p, n) Σ]
+            K += [zeros(n, n) zeros(n, n*p); zeros(n*p, n) Σ]
         end
 
-        gp.K_inv = inv(gp.K)
+        return K
+    end
 
-        # display(gp.K)
-        # display(inv(gp.K_inv))
+    function update_covariance(gp)
+        gp.K = cov_mat(gp, gp.xs, gp.xs ; is_K=true)
+
+        # gp.K_inv = inv(gp.K)
     end
 
     function posterior(gp, xs)
         # compute posterior mean and variance using linear solves
-        m, p = size(xs)
+        n, p = size(xs)
 
         if gp.use_ds
             ys = stack(gp.ys, gp.ds)
@@ -165,38 +162,38 @@ module gaussian_process
         mean = K_cross * (K \ ys)
         cov  = K_test - K_cross * (K \ transpose(K_cross))
 
-        return mean[1:m], cov[1:m,1:m]
+        return mean[1:n], cov[1:n,1:n]
     end
 
     function gp_mean(gp, x)
         # compute mean using K inverse
         # less stable but works with JuMP AD
-        m, p = size(gp.xs)
+        n, p = size(gp.xs)
 
         if gp.use_ds
             ys = stack(gp.ys, gp.ds)
-            m = m*(p+1)
+            n = n*(p+1)
         else
             ys = gp.ys
         end
 
         # k = [gp.kernel(gp.xs[i,:], x, gp.hyperparameters, gp.args) for i = 1:m]
         k = cov_mat(gp, gp.xs, x)[:,1]
-        return sum(k[i] * (gp.K_inv * ys)[i] for i = 1:m)
+        return sum(k[i] * (gp.K_inv * ys)[i] for i = 1:n)
     end
 
     function gp_var(gp, x)
         # compute var using K inverse
         # less stable but works with JuMP AD
-        m, p = size(gp.xs)
+        n, p = size(gp.xs)
 
         if gp.use_ds
-            m = m*(p+1)
+            n = n*(p+1)
         end
 
         # k = [gp.kernel(gp.xs[i,:], x, gp.hyperparameters, gp.args) for i = 1:m]
         k = cov_mat(gp, gp.xs, x)[:,1]
-        v = gp.kernel(x, x, gp.hyperparameters, gp.args) - sum(sum(k[i] * gp.K_inv[i,j] * k[j] for i = 1:m) for j = 1:m)
+        v = gp.kernel(x, x, gp.hyperparameters, gp.args) - sum(sum(k[i] * gp.K_inv[i,j] * k[j] for i = 1:n) for j = 1:n)
         return v
     end
 

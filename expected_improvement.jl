@@ -5,9 +5,11 @@ module expected_improvement
     using Distributions
 
     include("./latin_hypercube.jl")
-    include("./gaussian_process.jl")
     import latin_hypercube: LH
+    include("./gaussian_process.jl")
     import gaussian_process: GP, gp_mean, gp_var
+
+    export multistart_optimize
 
     function build_model(gp, bounds, x0 ; obj="EI", alpha=1, beta=0, cost=x->0)
         m, n = size(gp.xs)
@@ -58,15 +60,18 @@ module expected_improvement
     end
 
 
-    function multistart_optimize(gp, bounds, n_starts ; obj="EI", alpha=1, beta=0, cost=x->0)
+    function multistart_optimize(model, vars, bounds, n_starts)
+        p = size(bounds, 1)
+
         min_val = Inf
         min_x = nothing
 
-        x0s = LH(bounds, n_starts)
+        starts = LH(bounds, n_starts)
 
         for i = 1:n_starts
-            model, vars = build_model(gp, bounds, x0s[i,:], obj=obj, alpha=alpha, beta=beta, cost=cost)
-            # print(model)
+            for k = 1:p
+                setvalue(vars[k], starts[i, k])
+            end
 
             status = solve(model)
 
@@ -84,6 +89,4 @@ module expected_improvement
 
         return min_x
     end
-    export multistart_optimize
-
 end

@@ -2,7 +2,7 @@ module kernels
 
     using SpecialFunctions
 
-    export SE, NS_SE, matern, d_matern, dd_matern, wendland2
+    export SE, d_SE, dd_SE, matern, d_matern, dd_matern, gibbs_matern, stein_matern, wendland2
 
     ### SQUARED EXPONENTIAL
 
@@ -73,7 +73,7 @@ module kernels
 
     ### 1D VARIABLE LENGTH SCALE MATERN
 
-    function NS_matern(x, y, hyperparameters, args)
+    function gibbs_matern(x, y, hyperparameters, args)
         α, l_min, l_max, β = hyperparameters
         v, t = args
         r = norm(x - y)
@@ -91,6 +91,24 @@ module kernels
             return α * c * (1 + 5^0.5*r/l + 5*r^2/(3*l^2)) * exp(-5^0.5*r/l)
         else
             return α * c * 1.0/(gamma(v) * 2^(v-1)) * (2.0*sqrt(v)*r/l)^v * besselk(v, 2.0*sqrt(v)*r/l)
+        end
+    end
+
+    ### 1D VARIABLE SMOOTHNESS MATERN
+
+    function stein_matern(x, y, hyperparameters, args)
+        α, l, β = hyperparameters
+        t = args[1]
+        r = norm(x - y)
+
+        v_f(x) = 0.5 * exp(t(x) / β)
+
+        v = (v_f(x) + v_f(y)) / 2
+
+        if r < 1e-16
+            return 1
+        else
+            return α * 1.0/(gamma(v) * 2^(v-1)) * (2.0*sqrt(v)*r/l)^v * besselk(v, 2.0*sqrt(v)*r/l)
         end
     end
 

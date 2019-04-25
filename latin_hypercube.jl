@@ -1,11 +1,13 @@
 module latin_hypercube
 
+    export LH
+
     function LH(bounds, n_points)
         dim = size(bounds,1)
 
         xs = []
 
-        # place point randomly in grid sqaure
+        # place point randomly in grid square
         grid = [[bounds[i,1] + (bounds[i,2] - bounds[i,1]) * (j-rand())/n_points for j = 1:n_points] for i = 1:dim]
         n_left = n_points
 
@@ -20,6 +22,4 @@ module latin_hypercube
 
         return hcat(xs...)'
     end
-    export LH
-
 end

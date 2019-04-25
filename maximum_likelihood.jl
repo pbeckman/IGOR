@@ -4,105 +4,116 @@ module maximum_likelihood
     using Ipopt
     using PyPlot
     using Iterators
+    using ForwardDiff
 
     include("./gaussian_process.jl")
-    import gaussian_process: update_covariance, gp_var, stack
+    import gaussian_process: cov_mat, update_covariance, stack
 
     export MLE
 
-    function MLE(gp, bounds, starts, file ; use_ds=false) # ; epsilon=0, bounds=nothing)
+    function MLE(gp, bounds, starts, file ; target="all")
         SO = STDOUT
 
         # number of observations, dimension
-        m, n = size(gp.xs)
+        n, p = size(gp.xs)
 
-        # number of hyperparameters
-        n_hp = length(gp.hyperparameters)
-
-        function logL(hyperparameters...)
-            gp.hyperparameters = collect(hyperparameters)#[1:1]
-
-            println("hyperparameters: ", gp.hyperparameters)
-
-            update_covariance(gp, use_ds=use_ds)
-
-            return (
-                -0.5 * stack(gp.ys, gp.ds)' * (gp.K \ stack(gp.ys, gp.ds)) -
-                 0.5 * log(abs(det(gp.K)))
-                    )[1]
-
-            # return -0.5 * sum(sum(gp.ys[i] * gp.K_inv[i,j] * gp.ys[j] for i = 1:m) for j = 1:m) -
-            #         0.5 * log(abs(det(gp.K)))
+        # number of parameters
+        if target == "hyperparameters"
+            n_params = length(gp.hyperparameters)
+        elseif target == "noise"
+            n_params = length(gp.noise_params)
+        elseif target == "all"
+            n_params = length(gp.hyperparameters) + length(gp.noise_params)
         end
 
-        function d_logL(g, hyperparameters...)
-            gp.hyperparameters = collect(hyperparameters)#[1:1]
+        # log likelihood
+        function logL(params...)
+            assign_params(gp, params, target)
 
-            update_covariance(gp, use_ds=use_ds)
+            update_covariance(gp)
 
-            if use_ds
+            if gp.use_ds
+                return (
+                    -0.5 * stack(gp.ys, gp.ds)' * (gp.K \ stack(gp.ys, gp.ds)) -
+                     0.5 * log(abs(det(gp.K)))
+                        )[1]
+            else
+                return (
+                    -0.5 * gp.ys' * (gp.K \ gp.ys) -
+                     0.5 * log(abs(det(gp.K)))
+                        )[1]
+            end
+        end
+
+        # gradient of log likelihood
+        function ∇logL(g, params...)
+            assign_params(gp, params, target)
+
+            update_covariance(gp)
+
+            if gp.use_ds
                 alpha = gp.K \ stack(gp.ys, gp.ds)
-                d_Ks = [zeros(2m, 2m) for k=1:n_hp]
+                d_Ks = zeros(n_params, n*(p+1), n*(p+1))
             else
                 alpha = gp.K \ gp.ys
-                d_Ks = [zeros(m, m) for k=1:n_hp]
+                d_Ks = zeros(n_params, n, n)
             end
 
-
-
-            for i = 1:m
-                for j = 1:m
-                    # derivative of kernel in each hyperparameter
-                    d_hps = gp.d_hp_kernel(gp.xs[i,:], gp.xs[j,:], gp.hyperparameters, gp.args)
-                    for k = 1:n_hp
-                        d_Ks[k][i,j] = d_hps[k]
+            # Jacobian of transformation which takes a vector of parameters
+            # to the vectorized covariance matrix
+            D = ForwardDiff.jacobian(
+                function (ps)
+                    if target == "hyperparameters"
+                        gp.hyperparameters = ps
+                    elseif target == "noise"
+                        gp.noise_params = ps
+                    elseif target == "all"
+                        gp.hyperparameters = ps[1:length(gp.hyperparameters)]
+                        gp.noise_params = ps[length(gp.hyperparameters)+1:end]
+                        # println("hp: ", gp.hyperparameters, ", noise: ", gp.noise_params)
                     end
+                    return cov_mat(gp, gp.xs, gp.xs, is_K=true)
+                end,
+                if target == "hyperparameters"
+                    gp.hyperparameters
+                elseif target == "noise"
+                    gp.noise_params
+                elseif target == "all"
+                    vcat(gp.hyperparameters, gp.noise_params)
+                end
+            )
+
+            # reshape columns of the Jacobian into matrices containing the
+            # derivative of each covariance in terms of a single hyperparameter
+            if gp.use_ds
+                for k = 1:n_params
+                    d_Ks[k,:,:] = reshape(D[:,k], (n*(p+1), n*(p+1)))
+                end
+            else
+                for k = 1:n_params
+                    d_Ks[k,:,:] = reshape(D[:,k], (n,n))
                 end
             end
 
-            for k = 1:n_hp
-                g[k] = 0.5 * trace((alpha * alpha' - gp.K_inv) * d_Ks[k])
+            # construct gradient vector
+            for k = 1:n_params
+                g[k] = 0.5 * trace(alpha * alpha' * d_Ks[k,:,:] - gp.K \ d_Ks[k,:,:])
             end
         end
 
-        # println("making model")
-        model = Model(solver = IpoptSolver(max_iter=1000))
+        # construct model
+        model = Model(solver = IpoptSolver(max_iter=500))
 
-        vars = Array{Any}(n_hp)
-        for k = 1:n_hp
-            vars[k] = @variable(model, lowerbound = bounds[k,1], upperbound = bounds[k,2], start = starts[k])
+        vars = Array{Any}(n_params)
+        for k = 1:n_params
+            vars[k] = @variable(model, lowerbound = bounds[k, 1], upperbound = bounds[k, 2], start = starts[k])
         end
 
-        # @variable(model, l >= 1e-16, start=100.0)
-        # @variable(model, fake)
-
-        # if epsilon > 0
-        #     function var_x(x,l)
-        #         gp.hyperparameters = [l]
-        #         println("x : ", x)
-        #         return gp_var(gp, x)
-        #     end
-        #
-        #     # vertices = []
-        #     global constraint_funcs = []
-        #     for x in product([bounds[i,:] for i = 1:n]...)
-        #         push!(constraint_funcs, partial(var_x, collect(x)))
-        #     end
-        #
-        #     for i = 1:length(constraint_funcs)
-        #         s = Symbol("cons"*string(i))
-        #         JuMP.register(model, s, 1, constraint_funcs[i], autodiff=true)
-        #         @eval @NLconstraint($model, $(Expr(:call, s, l)) <= 1-$epsilon)
-        #     end
-        # end
-
-        # println("building objective")
-        JuMP.register(model, :likelihood, n_hp, logL, d_logL)
+        JuMP.register(model, :likelihood, n_params, logL, ∇logL)
 
         JuMP.setNLobjective(model, :Max, Expr(:call, :likelihood, vars...))
 
-        # print(model)
-
+        # output optimization procedure printed statements to file
         redirect_stdout(file)
         status = solve(model)
         redirect_stdout(SO)
@@ -112,11 +123,27 @@ module maximum_likelihood
             throw(ErrorException("MLE FAILED"))
         end
 
-        gp.hyperparameters = [getvalue(vars[k]) for k = 1:n_hp]
+        # set hyperparameters or noise parameters to optimal MLE values
+        if target == "hyperparameters"
+            gp.hyperparameters = [getvalue(vars[k]) for k = 1:n_params]
+        elseif target == "noise"
+            gp.noise_params = [getvalue(vars[k]) for k = 1:n_params]
+        elseif target == "all"
+            gp.hyperparameters = [getvalue(vars[k]) for k = 1:length(gp.hyperparameters)]
+            gp.noise_params = [getvalue(vars[k]) for k = (length(gp.hyperparameters)+1):n_params]
+        end
     end
 
-    function partial(f,a...)
-        ((b...) -> f(a...,b...))
-    end
+    function assign_params(gp, params, target)
+        ps = collect(params)
 
+        if target == "hyperparameters"
+            gp.hyperparameters = ps
+        elseif target == "noise"
+            gp.noise_params = ps
+        elseif target == "all"
+            gp.hyperparameters = ps[1:length(gp.hyperparameters)]
+            gp.noise_params = ps[length(gp.hyperparameters)+1:end]
+        end
+    end
 end

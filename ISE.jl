@@ -1,3 +1,6 @@
+### ARGUMENTS:
+### dimension, quadrature reltol, output.csv
+
 using Cubature
 using DataFrames
 using CSV
@@ -12,6 +15,13 @@ include("./gaussian_process.jl")
 import gaussian_process: GP, posterior, update_covariance
 include("./latin_hypercube.jl")
 import latin_hypercube: LH
+include("./maximum_likelihood.jl")
+import maximum_likelihood: MLE
+include("./plotting.jl")
+import plotting: plot_posterior
+
+# open file for JuMP to write to
+file = open("output.txt", "w")
 
 ### DEFINE TEST FUNCTION
 
@@ -92,59 +102,20 @@ end
 
 ### ERROR ESTIMATES
 
-function plot_posterior(f, gp, bounds)
-    if p == 1
-        # make grid on which to compute posterior
-        n_grid = 300
-        g = reshape(linspace(bounds[1], bounds[2], n_grid), (n_grid, 1))
-
-        # compute posterior mean and covariance of GP
-        mean, cov = posterior(gp, g)
-        std_dev = [sqrt(max(0, cov[i, i])) for i=1:size(cov,1)]
-
-        # plot true function
-        plot(g, [f(x) for x in g], color="black")
-
-        # plot GP
-        plot(g, mean, color="red")
-        fill_between(vec(g), vec(mean - 2*std_dev), vec(mean + 2*std_dev), color="#dddddd")
-
-        # plot data
-        scatter(gp.xs, gp.ys, color="black")
-    elseif p == 2
-        # make grid on which to compute posterior
-        n_grid = 20
-        g = vcat([[i j] for i=bounds[1, 1]:(bounds[1, 2] - bounds[1, 1])/n_grid:bounds[1, 2], j=bounds[2, 1]:(bounds[2, 2] - bounds[2, 1])/n_grid:bounds[2, 2]]...)
-
-        # compute posterior mean and covariance of GP
-        mean, cov = posterior(gp, g)
-
-        # plot true function
-        surf(g[:,1], g[:,2], [f(g[i,:]) for i=1:size(g,1)], color="blue")
-
-        # plot GP
-        surf(g[:,1], g[:,2], mean, color="red")
-
-        # plot data
-        scatter3D(gp.xs[:,1], gp.xs[:,2], gp.ys, color="black")
-    end
-
-    show()
-end
-
 function ISE(f, gp, bounds)
     if p == 1
         return hquadrature(
             x -> (f([x]) - posterior(gp, reshape([x], (1, 1)))[1][1])^2,
             bounds[1],
-            bounds[2]
+            bounds[2],
+            reltol=parse(Float64, ARGS[2])
             )
     else
         return hcubature(
             x -> (f(x) - posterior(gp, reshape(x, (1, p)))[1][1])^2,
             bounds[:, 1],
             bounds[:, 2],
-            reltol=parse(Float64, ARGS[3])
+            reltol=parse(Float64, ARGS[2])
             )
     end
 end
@@ -178,18 +149,9 @@ function test(n)
     end
     for i=1:n
         t, ∇t = trig_dists(xs[i,:], gs[i,:], ∇gs[i,:,:])
-        # println("x: ", xs[i,:], " t: ", t, " ∇t: ", ∇t)
         ts[i,:] = t
         ∇ts[i,:] = ∇t
     end
-
-    # println("xs: ",  xs)
-    # println("fs: ",  fs)
-    # println("∇fs: ", ∇fs)
-    # println("gs: ",  gs)
-    # println("∇gs: ")
-    # display(∇gs)
-    # println("\nts: ", ts)
 
     ## BUILD GAUSSIAN PROCESSES
 
@@ -200,6 +162,15 @@ function test(n)
     l_m = if (p==1) 3 else 2 end
     # differentiability of matern
     v = 2.5
+    # maximum noise
+    max_noise = 1e10
+    # noise width
+    β = 0.007
+
+    # hyperparameter bounds
+    hp_bounds = [0.1 10.0; 0.1 10.0]
+    # noise parameter bounds
+    noise_bounds = [1.0 1e8; 1e-8 1]
 
     # GP no derivatives
     gp_noder = GP(
@@ -225,7 +196,7 @@ function test(n)
         hyperparameters=[α_m, l_m],
         args=[v],
         use_ds=true,
-        use_AD=(p==1)
+        use_AD=false
         )
 
     # GP noisy derivatives
@@ -239,19 +210,28 @@ function test(n)
         dd_kernel=dd_matern,
         hyperparameters=[α_m, l_m],
         args=[v],
+        noise_params=[max_noise, β],
         use_ds=true,
-        use_AD=(p==1),
-        noise_width=parse(Float64, ARGS[2])
+        use_AD=false,
+        use_noise=true
         )
+
+    MLE(gp_noder, hp_bounds, gp_der.hyperparameters, file, target="hyperparameters")
+    MLE(gp_der, hp_bounds, gp_der.hyperparameters, file, target="hyperparameters")
+    MLE(gp_noisy, vcat(hp_bounds, noise_bounds), vcat(gp_noisy.hyperparameters, gp_noisy.noise_params), file, target="all")
+    println("noise parameters: ", gp_noisy.noise_params)
 
     ### COMPUTE POSTERIOR
     update_covariance(gp_noder)
     update_covariance(gp_der)
     update_covariance(gp_noisy)
 
-    # plot_posterior(f, gp_noder, bounds)
-    # plot_posterior(f, gp_der, bounds)
-    # plot_posterior(f, gp_noisy, bounds)
+    plot_posterior(gp_noder, bounds, if (p==1) 300 else 20 end, f=f)
+    show()
+    plot_posterior(gp_der, bounds, if (p==1) 300 else 20 end, f=f)
+    show()
+    plot_posterior(gp_noisy, bounds, if (p==1) 300 else 20 end, f=f)
+    show()
 
     ise_noder, err_noder = ISE(f, gp_noder, bounds)
     ise_der, err_der = ISE(f, gp_der, bounds)
@@ -264,11 +244,7 @@ function test(n)
 end
 
 ### RUN TESTS
-if p == 1
-    ns = 2:15
-else
-    ns = [n^p for n=2:10]
-end
+ns = [n^p for n=2:10]
 
 data = zeros(3, length(ns))
 
@@ -278,4 +254,6 @@ end
 
 println(data)
 
-CSV.write(ARGS[4], DataFrame(data))
+if length(ARGS) > 2
+    CSV.write(ARGS[3], DataFrame(data))
+end
